@@ -1,0 +1,6 @@
+LIBRARY		udf_strnxfrm
+VERSION		1.0
+EXPORTS
+  udf_strnxfrm
+  udf_strnxfrm_init
+  udf_strnxfrm_deinit

@@ -1,0 +1,6 @@
+LIBRARY		udf_varstring_hash
+VERSION		1.0
+EXPORTS
+  udf_varstring_hash
+  udf_varstring_hash_init
+  udf_varstring_hash_deinit

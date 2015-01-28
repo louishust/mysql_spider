@@ -1,0 +1,96 @@
+#! /usr/bin/perl
+
+use strict;
+use warnings;
+
+use DBI;
+use Getopt::Long;
+
+sub usage {
+    my $exit_code = shift || 0;
+    print STDERR << "EOT";
+usage: $0 [options] src_addr dest_addr
+example:
+  % $0 \\
+   "dbi:mysql:database=db1;table=tbl1;user=foo;password=XXX" \\
+   "dbi:mysql:database=db2;table=tbl2;host=bar;user=foo"
+options:
+  --reset       reset duplicate check info.
+  --sender=idx  slot no. used for checking duplicates (0..63, default: 0)
+  --help
+EOT
+    exit $exit_code;
+}
+
+sub connect_to_db {
+    my $addr = shift;
+    $addr =~ s/;table=([^;]+)//
+        or die "table name missing in operand: $addr\n";
+    my $table = $1;
+    my $dbh = DBI->connect($addr)
+        or die "failed to connect to database: $addr\n";
+    ($dbh, $table);
+}
+
+my $sender_index = 0;
+my $do_reset = 0;
+my $help;
+
+GetOptions(
+    'sender=i' => \$sender_index,
+    'reset'    => \$do_reset,
+    help       => \$help,
+) or usage(1);
+usage(1) if $help;
+usage(1) unless @ARGV == 2;
+
+my ($src, $dst) = @ARGV;
+
+my ($src_conn, $src_table) = connect_to_db($src);
+my ($dst_conn, $dst_table) = connect_to_db($dst);
+
+my $mode = $do_reset ? 'w' : 'a';
+
+while (1) {
+    # wait until a row gets ready
+    my $wait = $src_conn->selectall_arrayref(
+        'select queue_wait(?)',
+        {},
+        $src_table,
+    ) or die $src_conn->errstr;
+    die "received an error from source (table not found?)\n"
+        unless defined $wait->[0][0];
+    next unless $wait->[0][0];
+    # receive row
+    my $rowid = $src_conn->selectall_arrayref('select queue_rowid()')
+        or die $src_conn->errstr;
+    die "unexpected response from source\n"
+        unless $rowid->[0][0];
+    my $row = $src_conn->selectall_arrayref(
+        "select * from $src_table",
+        { Slice => {} },
+    ) or die $src_conn->errstr;
+    # write row
+    my $res = $dst_conn->selectall_arrayref(
+        "select queue_set_srcid(?,?,?)",
+        {},
+        $sender_index,
+	$mode,
+        $rowid->[0][0],
+    ) or die $dst_conn->errstr;
+    die "failed to set source id (sender index out of range?)\n"
+        unless $res->[0][0];
+    $mode = 'a';
+    $dst_conn->do(
+        "insert into $dst_table ("
+            . join(',', sort keys %{$row->[0]})
+                . ') values ('
+                    . join(
+                        ',',
+                        map {
+                            $dst_conn->quote($row->[0]{$_})
+                        } sort keys %{$row->[0]},
+                    )
+                        . ')',
+    ) or die $dst_conn->errstr;
+}
